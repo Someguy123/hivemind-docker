@@ -179,6 +179,21 @@ You will have to re-login and restart the containers after the update.
   fi
 }
 
+build_hmind() {
+  (( $# > 0 )) && hmind_branch="$1" || hmind_branch="master"
+  (( $# > 1 )) && hmind_tag="$2" || hmind_tag="hivemind:${hmind_branch}"
+  hmind_dir="$(mktemp -d)"
+  echo "${bldblu} >>> Cloning Hivemind into $hmind_dir (branch: $hmind_branch) $reset"
+  git clone -b "$hmind_branch" https://gitlab.syncad.com/hive/hivemind.git "$hmind_dir"
+  cd "$hmind_dir"
+  echo "${bldblu} >>> Initializing submodules ... $reset"
+  git submodule update --init --recursive
+  echo "${bldblu} >>> Building Hivemind as tag ${hmind_tag} $reset"
+  docker build -t "${hmind_tag}" .
+  echo "${bldgrn} >>> Successfully built Hivemind as tag ${hmind_tag} $reset"
+  echo "${bldgrn} >>> To use this Hivemind image, you must set HIVEMIND_IMAGE=$hmind_tag in your .env $reset \n"
+}
+
 build(){
   # Pull docker image if it exists on dockerhub https://stackoverflow.com/a/56316948/5369345
   if DOCKER_CLI_EXPERIMENTAL=enabled docker manifest inspect $HIVEMIND_IMAGE >/dev/null; then
@@ -205,33 +220,62 @@ initdb() {
   docker-compose rm -f initdb
 }
 
+_importdb() {
+  archive_filename="$1"
+  if [ ! -f dump/$archive_filename ]; then
+    echo "${bldred}ERROR! dump/$archive_filename is missing. Cannot import."
+    return 1
+  fi
+  # Import DB. Can't restore from a pipe when multithreading with -j. Workaround by mounting volume /dump.
+  time screen -S importdb -m bash -c "
+  echo -e \"$bldblu Importing the dump into postgresql using `expr $(nproc) - 2` jobs (screen session) $reset\"
+  sleep 3
+  docker exec -it $POSTGRES_CONTAINER bash -c \"
+    PGPASSWORD=$POSTGRES_PASSWORD pg_restore -v -d postgresql://$POSTGRES_USER@$POSTGRES_URL/$POSTGRES_DB -j `expr $(nproc) - 2` /tmp/$archive_filename
+    \"
+  "
+  # Check the DB size
+  dbsize
+}
+
+_dldump() {
+    # Extract base filename from url, also: url=http://www.foo.bar/file.ext; basename $url
+    local url="$1"
+    archive_filename="${url##*/}"
+    echo -e $bldblu"Downloading the latest dump from $url"$reset
+    wget -nc "$url" -O "dump/$archive_filename"
+}
+
 importdb() {
-  dump_state=$(curl -s $DB_DUMP_URL_STATE)
   if [[ ! $(docker ps -aq -f status=running -f name=$POSTGRES_CONTAINER) ]]; then
     # Download DB
     echo -e $bldred"$POSTGRES_CONTAINER container not running, start it before downloading/importing the database"$reset
     exit
   fi
-  if [[ $dump_state == "backup complete." ]]; then
-    # Extract base filename from url, also: url=http://www.foo.bar/file.ext; basename $url
-    archive_filename=$(url=${DB_DUMP_URL}; echo "${url##*/}")
-    echo -e $bldblu"Downloading the latest dump (screen session)"$reset
-    wget -nc $DB_DUMP_URL -O dump/$archive_filename
-    sleep 3
-    if [ -f dump/$archive_filename ]; then
-      # Import DB. Can't restore from a pipe when multithreading with -j. Workaround by mounting volume /dump.
-      time screen -S importdb -m bash -c "
-      echo -e \"$bldblu Importing the dump into postgresql using `expr $(nproc) - 2` jobs (screen session) $reset\"
+  if (( $# > 0 )); then
+    if egrep -q '^http' <<< "$1"; then
+      dl_url="$1"
+      dl_name="${dl_url##*/}"
+      _dldump "$dl_url"
       sleep 3
-      docker exec -it $POSTGRES_CONTAINER bash -c \"
-        PGPASSWORD=$POSTGRES_PASSWORD pg_restore -v -d postgresql://$POSTGRES_USER@$POSTGRES_URL/$POSTGRES_DB -j `expr $(nproc) - 2` /tmp/$archive_filename
-        \"
-      "
-      # Check the DB size
-      dbsize
+      _importdb "$dl_name"
+      return $?
     else
-      echo -e $bldred"Missing dump/$archive_filename, nothing to do"$reset
+      _importdb "$1"
+      return $?
     fi
+  fi
+  archive_filename="${DB_DUMP_URL##*/}"
+  if [[ -f "dump/$archive_filename" ]]; then
+    echo "${bldblu} Dump already exists at dump/$archive_filename - importing..."
+    _importdb "dump/$archive_filename"
+    return $?
+  fi
+  dump_state=$(curl -s $DB_DUMP_URL_STATE)
+  if [[ $dump_state == "backup complete." ]]; then
+    _dldump "${DB_DUMP_URL}"
+    sleep 3
+    _importdb "$archive_filename"
   else
     echo -e $bldpur"DB dump still in progress, retry later"$reset
   fi
@@ -334,11 +378,14 @@ case $1 in
   build)
     build
   ;;
+  build_hivemind|build_hmind|build-hivemind|build-hmind)
+    build_hmind "${@:2}"
+    ;;
   initdb)
     initdb
   ;;
   importdb)
-    importdb
+    importdb "${@:2}"
   ;;
   dumpdb)
     dumpdb
