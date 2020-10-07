@@ -182,16 +182,24 @@ You will have to re-login and restart the containers after the update.
 build_hmind() {
   (( $# > 0 )) && hmind_branch="$1" || hmind_branch="master"
   (( $# > 1 )) && hmind_tag="$2" || hmind_tag="hivemind:${hmind_branch}"
-  hmind_dir="$(mktemp -d)"
-  echo "${bldblu} >>> Cloning Hivemind into $hmind_dir (branch: $hmind_branch) $reset"
-  git clone -b "$hmind_branch" https://gitlab.syncad.com/hive/hivemind.git "$hmind_dir"
+  hmind_dir="${PWD}/hivemind-gitlab"
+  if [[ ! -d "$hmind_dir" ]]; then
+    echo -e "${bldblu} >>> Cloning Hivemind into $hmind_dir () $reset"
+    git clone https://gitlab.syncad.com/hive/hivemind.git "$hmind_dir"
+  fi
   cd "$hmind_dir"
-  echo "${bldblu} >>> Initializing submodules ... $reset"
+  echo -e "${bldblu} >>> Running git pull ... $reset"
+  git pull
+  echo -e "${bldblu} >>> Checking out branch: $hmind_branch ... $reset"
+  git checkout "$hmind_branch"
+  echo -e "${bldblu} >>> Running git pull ... $reset"
+  git pull
+  echo -e "${bldblu} >>> Initializing submodules ... $reset"
   git submodule update --init --recursive
-  echo "${bldblu} >>> Building Hivemind as tag ${hmind_tag} $reset"
+  echo -e "${bldblu} >>> Building Hivemind as tag ${hmind_tag} $reset"
   docker build -t "${hmind_tag}" .
-  echo "${bldgrn} >>> Successfully built Hivemind as tag ${hmind_tag} $reset"
-  echo "${bldgrn} >>> To use this Hivemind image, you must set HIVEMIND_IMAGE=$hmind_tag in your .env $reset \n"
+  echo -e "${bldgrn} >>> Successfully built Hivemind as tag ${hmind_tag} $reset"
+  echo -e "${bldgrn} >>> To use this Hivemind image, you must set HIVEMIND_IMAGE=$hmind_tag in your .env $reset \n"
 }
 
 build(){
